@@ -589,10 +589,11 @@ async def handle_document_upload(update: Update, context: ContextTypes.DEFAULT_T
     content = file_bytes.decode("utf-8", errors="ignore")
 
     res = database.import_accounts_text(content)
-    total_found = res["total_found"]
-    new_added = res["new_added"]
-    ignored = res["ignored"]
-    cats = res["categories"]
+    total_found = res.get("total_found", 0)
+    new_added = res.get("new_added", 0)
+    updated = res.get("updated", 0)
+    ignored = res.get("ignored", 0)
+    cats = res.get("categories", {})
 
     stats = database.get_stats()
     total_stock = stats["available"]["TOTAL"]
@@ -601,8 +602,9 @@ async def handle_document_upload(update: Update, context: ContextTypes.DEFAULT_T
         "📥 **File Import Complete!**\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         f"📄 **Total Found in File:** `{total_found}` accounts\n"
-        f"⏭️ **Already in DB (Ignored):** `{ignored}` duplicates\n"
-        f"✨ **Newly Added to Stock:** `{new_added}` accounts\n\n"
+        f"✨ **Newly Added to Stock:** `{new_added}` accounts\n"
+        f"🔄 **Passwords/2FA Updated:** `{updated}` accounts\n"
+        f"⏭️ **Exact Duplicates (Ignored):** `{ignored}` accounts\n\n"
         "📊 **Category Breakdown (New Additions):**\n"
         f"  • 🔵 FB Fixed:  `+{cats.get('FB_FIXED', 0)}`\n"
         f"  • 🟢 Fresh:     `+{cats.get('FRESH', 0)}`\n"

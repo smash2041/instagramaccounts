@@ -168,6 +168,7 @@ def import_accounts_text(text: str):
         "new_added": new_added,
         "updated": updated,
         "ignored": ignored,
+        "categories": cat_counts
     }
 
 def get_stats():
