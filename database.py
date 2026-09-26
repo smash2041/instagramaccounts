@@ -5,10 +5,17 @@ from config import TURSO_DB_URL, TURSO_AUTH_TOKEN
 
 def get_db_client():
     """Returns a client for Turso DB or falls back to local SQLite file:accounts.db."""
-    if TURSO_DB_URL and TURSO_AUTH_TOKEN:
-        return libsql_client.create_client_sync(url=TURSO_DB_URL, auth_token=TURSO_AUTH_TOKEN)
-    elif TURSO_DB_URL:
-        return libsql_client.create_client_sync(url=TURSO_DB_URL)
+    url = TURSO_DB_URL.strip().strip("'\"")
+    auth_token = TURSO_AUTH_TOKEN.strip().strip("'\"")
+
+    # Convert libsql:// to https:// to use robust HTTPS instead of WebSocket (wss://)
+    if url.startswith("libsql://"):
+        url = url.replace("libsql://", "https://")
+
+    if url and auth_token:
+        return libsql_client.create_client_sync(url=url, auth_token=auth_token)
+    elif url:
+        return libsql_client.create_client_sync(url=url)
     else:
         return libsql_client.create_client_sync("file:accounts.db")
 
