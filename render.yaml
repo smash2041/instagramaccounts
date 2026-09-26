@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: instagram-accounts-telegram-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: ADMIN_USER_ID
+        sync: false
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
+      - key: PROXY_PRIMARY
+        value: http://sub_Hzu7N0Hx:Rujm61dQa861evho@gate.turnoxy.com:1318
+      - key: PROXY_BACKUP
+        value: ""
