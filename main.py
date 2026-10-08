@@ -9,6 +9,7 @@ from bot import (
     start_command,
     help_command,
     history_command,
+    scan_command,
     callback_router,
     handle_document_upload,
     handle_text_messages,
@@ -53,6 +54,8 @@ def main():
     app.add_handler(CommandHandler("menu", start_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("history", history_command))
+    app.add_handler(CommandHandler("scan", scan_command))
+    app.add_handler(CommandHandler("scan_stock", scan_command))
     app.add_handler(CommandHandler("backup", lambda u, c: send_backup_file(u.effective_chat.id, c)))
 
     app.add_handler(CallbackQueryHandler(callback_router))

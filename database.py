@@ -286,9 +286,9 @@ def get_account_by_username(username: str):
     finally:
         client.close()
 
-def bulk_export_accounts(category: str, limit: int):
+def fetch_accounts_for_export(category: str, limit: int):
     """
-    Picks N available accounts, marks them as CONSUMED, and returns list.
+    Picks N available accounts without marking them as consumed yet.
     """
     client = get_db_client()
     try:
@@ -310,9 +310,8 @@ def bulk_export_accounts(category: str, limit: int):
             """, [limit])
 
         accounts = []
-        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         for row in res.rows:
-            acc = {
+            accounts.append({
                 "id": row[0],
                 "username": row[1],
                 "password": row[2],
@@ -321,14 +320,31 @@ def bulk_export_accounts(category: str, limit: int):
                 "timestamp": row[5],
                 "two_fa_added": row[6],
                 "fb_status": row[7]
-            }
-            accounts.append(acc)
-            # Mark consumed
-            client.execute("UPDATE accounts SET status = 'CONSUMED', consumed_at = ? WHERE id = ?;", [now, acc["id"]])
-
+            })
         return accounts
     finally:
         client.close()
+
+def mark_accounts_consumed_by_ids(ids: list):
+    """Marks a list of account IDs as CONSUMED."""
+    if not ids:
+        return
+    client = get_db_client()
+    try:
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for acc_id in ids:
+            client.execute("UPDATE accounts SET status = 'CONSUMED', consumed_at = ? WHERE id = ?;", [now, acc_id])
+    finally:
+        client.close()
+
+def bulk_export_accounts(category: str, limit: int):
+    """
+    Legacy wrapper: fetches accounts, marks them as consumed, and returns list.
+    """
+    accounts = fetch_accounts_for_export(category, limit)
+    if accounts:
+        mark_accounts_consumed_by_ids([a["id"] for a in accounts])
+    return accounts
 
 def get_suspended_accounts():
     """Returns list of suspended accounts."""

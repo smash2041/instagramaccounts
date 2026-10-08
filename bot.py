@@ -1,5 +1,6 @@
 import io
 import time
+import asyncio
 import logging
 import datetime
 import pyotp
@@ -23,6 +24,9 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# State flag for stock scanner
+is_scanner_running = False
 
 # --- Helper Functions ---
 
@@ -57,10 +61,11 @@ def build_main_menu_keyboard():
             InlineKeyboardButton("📜 Last 10 History", callback_data="menu_history")
         ],
         [
-            InlineKeyboardButton("📥 Import .txt File", callback_data="menu_import_info"),
+            InlineKeyboardButton("🔍 Live Scan Stock (Proxy)", callback_data="menu_live_scan"),
             InlineKeyboardButton("🔴 Suspended Accounts", callback_data="menu_suspended")
         ],
         [
+            InlineKeyboardButton("📥 Import .txt File", callback_data="menu_import_info"),
             InlineKeyboardButton("💾 Full DB Backup", callback_data="menu_backup")
         ]
     ]
@@ -118,15 +123,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
         "📖 **Bot Commands & Shortcuts:**\n\n"
         "• `/start` or `/menu` - Open Main Dashboard\n"
-        "• `/history` - View last 10 dispatched accounts\n"
+        "• `/history` - View last 10 dispatched accounts (with 2FA Keys)\n"
+        "• `/scan` - Live scan all stock accounts via Turnoxy proxy\n"
         "• `/backup` - Download complete database as .txt file\n"
-        "• **Send Username:** Just send any username (e.g. `user_123` or `@user_123`) to get instant 2FA OTP!\n"
-        "• **Upload File:** Drag and drop `saved_accounts.txt` anytime to import new accounts (duplicates automatically skipped)!\n"
+        "• **Send Username:** Send any username (e.g. `user_123` or `@user_123`) to get instant 2FA OTP & credentials!\n"
+        "• **Upload File:** Drag and drop `saved_accounts.txt` anytime to import new accounts!\n"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
 async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles /history command: displays recently consumed accounts."""
+    """Handles /history command: displays recently consumed accounts with 2FA Keys."""
     user = update.effective_user
     if not is_admin(user.id):
         return
@@ -138,12 +144,25 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     lines = ["📜 **Recently Dispatched Accounts (Last 10):**\n━━━━━━━━━━━━━━━━━━━━━━"]
     for i, acc in enumerate(recent, 1):
+        ts = acc['consumed_at'] or acc['timestamp'] or "N/A"
+        clean_cat = acc['category'].replace('_', ' ')
         lines.append(
-            f"{i}. `@{acc['username']}` | 🕒 `{acc['consumed_at'] or acc['timestamp']}`\n"
-            f"   Pass: `{acc['password']}` | Cat: `{acc['category']}`"
+            f"{i}. `@{acc['username']}` | 🕒 `{ts}`\n"
+            f"   🔑 Pass: `{acc['password']}`\n"
+            f"   🛡️ 2FA Key: `{acc['two_fa_secret'] or 'N/A'}`\n"
+            f"   🏷️ Cat: `{clean_cat}`"
         )
-    lines.append("━━━━━━━━━━━━━━━━━━━━━━\n_Send any username above to get fresh 2FA OTP!_")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━\n💡 _Send any username above to get fresh 2FA OTP!_")
+
+    keyboard = [
+        [InlineKeyboardButton("📥 Export History (.txt)", callback_data="export_history_txt")],
+        [InlineKeyboardButton("🔙 Main Menu", callback_data="menu_stats")]
+    ]
+    await update.message.reply_text(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
 
 
 # --- Interactive Callback Handlers ---
@@ -320,16 +339,69 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines = ["📜 **Recently Dispatched Accounts (Last 10):**\n━━━━━━━━━━━━━━━━━━━━━━"]
             for i, acc in enumerate(recent, 1):
                 ts = acc['consumed_at'] or acc['timestamp'] or "N/A"
+                clean_cat = acc['category'].replace('_', ' ')
                 lines.append(
                     f"{i}. `@{acc['username']}` | 🕒 `{ts}`\n"
-                    f"   🔑 Pass: `{acc['password']}` | 🏷️ `{acc['category']}`"
+                    f"   🔑 Pass: `{acc['password']}`\n"
+                    f"   🛡️ 2FA Key: `{acc['two_fa_secret'] or 'N/A'}`\n"
+                    f"   🏷️ Cat: `{clean_cat}`"
                 )
-            lines.append("━━━━━━━━━━━━━━━━━━━━━━\n💡 _Send any username above to get fresh 2FA OTP instantly!_")
+            lines.append("━━━━━━━━━━━━━━━━━━━━━━\n💡 _Send any username above to get fresh 2FA OTP!_")
+            keyboard = [
+                [InlineKeyboardButton("📥 Export History (.txt)", callback_data="export_history_txt")],
+                [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_stats")]
+            ]
             await query.edit_message_text(
                 "\n".join(lines),
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_stats")]]),
+                reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode="Markdown"
             )
+
+    elif data == "export_history_txt":
+        recent = database.get_recent_consumed(limit=50)
+        if not recent:
+            await query.answer("No consumed accounts to export.", show_alert=True)
+            return
+
+        await query.answer("Generating history file...")
+        lines = [
+            "# ==========================================",
+            "# RECENTLY CONSUMED ACCOUNTS HISTORY",
+            "# Format: username:password:2fa_secret",
+            "# =========================================="
+        ]
+        for acc in recent:
+            lines.append(f"{acc['username']}:{acc['password']}:{acc['two_fa_secret'] or ''}")
+
+        lines.append("\n# ==========================================")
+        lines.append("# DETAILED ACCOUNT BLOCKS")
+        lines.append("# ==========================================")
+        for acc in recent:
+            lines.append("========================================")
+            lines.append(f"Username: {acc['username']}")
+            lines.append(f"Password: {acc['password']}")
+            lines.append(f"2FA Secret: {acc['two_fa_secret'] or ''}")
+            lines.append(f"Category: {acc['category']}")
+            lines.append(f"Consumed At: {acc['consumed_at'] or ''}")
+            lines.append(f"Timestamp: {acc['timestamp'] or ''}")
+            lines.append("========================================\n")
+
+        export_text = "\n".join(lines)
+        file_bytes = io.BytesIO(export_text.encode("utf-8"))
+        filename = f"consumed_history_{len(recent)}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        file_bytes.name = filename
+        file_bytes.seek(0)
+
+        await context.bot.send_document(
+            chat_id=query.message.chat_id,
+            document=file_bytes,
+            filename=filename,
+            caption=f"📜 Exported history of {len(recent)} consumed accounts with 2FA keys."
+        )
+
+    elif data == "menu_live_scan":
+        await query.answer("Starting live stock scan...")
+        await run_live_stock_scanner(query.message.chat_id, context)
 
     elif data.startswith("mark_dead:"):
         username = data.split(":")[1]
@@ -356,6 +428,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"👤 **Username:** `{acc['username']}`\n"
                 f"🔑 **Password:** `{acc['password']}`\n"
+                f"🛡️ **2FA Key:** `{acc['two_fa_secret'] or 'N/A'}`\n"
                 f"🕒 **Timestamp:** `{acc['timestamp']}`\n"
                 f"🏷️ **Category:** `FB_FIXED` (Updated ✅)\n"
                 f"📦 **Status:** `{acc['status']}`\n"
@@ -363,7 +436,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🔐 **Live 2FA OTP:** `{otp}`\n"
                 f"⏳ **Validity:** `{rem} seconds left`\n"
                 "━━━━━━━━━━━━━━━━━━━━━━\n"
-                "_(Tap username, password, or OTP to copy instantly)_"
+                "_(Tap username, password, 2FA key, or OTP to copy instantly)_"
             )
             keyboard = [
                 [
@@ -423,6 +496,7 @@ async def process_single_account_dispatch(query, context, category: str, sort_mo
                 "━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"👤 **Username:** `{candidate['username']}`\n"
                 f"🔑 **Password:** `{candidate['password']}`\n"
+                f"🛡️ **2FA Key:** `{candidate['two_fa_secret'] or 'N/A'}`\n"
                 f"🕒 **Timestamp:** `{candidate['timestamp']}`\n"
                 f"🏷️ **Category:** `{candidate['category']}`\n"
             )
@@ -434,7 +508,7 @@ async def process_single_account_dispatch(query, context, category: str, sort_mo
                 f"🔐 **Live 2FA OTP:** `{otp}`\n"
                 f"⏳ **Time Remaining:** `{rem} seconds`\n"
                 "━━━━━━━━━━━━━━━━━━━━━━\n"
-                "_(Tap username/password/OTP above to copy instantly)_"
+                "_(Tap username, password, 2FA key, or OTP above to copy instantly)_"
             )
 
             keyboard = [
@@ -480,13 +554,14 @@ async def handle_refresh_otp(query, username: str):
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         f"👤 **Username:** `{acc['username']}`\n"
         f"🔑 **Password:** `{acc['password']}`\n"
+        f"🛡️ **2FA Key:** `{acc['two_fa_secret'] or 'N/A'}`\n"
         f"🕒 **Timestamp:** `{acc['timestamp']}`\n"
         f"🏷️ **Category:** `{acc['category']}`\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🔐 **Live 2FA OTP:** `{otp}`\n"
         f"⏳ **Time Remaining:** `{rem} seconds`\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "_(Tap username/password/OTP above to copy instantly)_"
+        "_(Tap username, password, 2FA key, or OTP above to copy instantly)_"
     )
 
     keyboard = [
@@ -539,6 +614,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
             "━━━━━━━━━━━━━━━━━━━━━━\n"
             f"👤 **Username:** `{acc['username']}`\n"
             f"🔑 **Password:** `{acc['password']}`\n"
+            f"🛡️ **2FA Key:** `{acc['two_fa_secret'] or 'N/A'}`\n"
             f"🕒 **Timestamp:** `{acc['timestamp']}`\n"
             f"🏷️ **Category:** `{acc['category']}`\n"
             f"📦 **Status:** `CONSUMED`\n"
@@ -546,7 +622,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
             f"🔐 **Live 2FA OTP:** `{otp}`\n"
             f"⏳ **Validity:** `{rem} seconds left`\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "_(Tap username, password, or OTP to copy instantly)_"
+            "_(Tap username, password, 2FA key, or OTP to copy instantly)_"
         )
         keyboard = [
             [
@@ -621,9 +697,10 @@ async def handle_document_upload(update: Update, context: ContextTypes.DEFAULT_T
 
 async def process_bulk_export(query, context, category: str, count: int):
     """Exports N accounts as a .txt document and sends to chat."""
-    await query.edit_message_text(f"⏳ Generating export file for **{count} accounts** (`{category}`)...", parse_mode="Markdown")
+    clean_cat_display = category.replace("_", " ")
+    await query.edit_message_text(f"⏳ Generating export file for **{count} accounts** ({clean_cat_display})...")
 
-    accounts = database.bulk_export_accounts(category, count)
+    accounts = database.fetch_accounts_for_export(category, count)
     if not accounts:
         await query.edit_message_text(
             f"❌ No available accounts in category `{category}` to export.",
@@ -632,33 +709,169 @@ async def process_bulk_export(query, context, category: str, count: int):
         )
         return
 
-    # Format accounts into saved_accounts.txt blocks
-    lines = []
+    # Build clean txt file containing COMBO list (user:pass:2fa) and detailed blocks
+    lines = [
+        "# ==========================================",
+        "# COMBO FORMAT (username:password:2fa_secret)",
+        "# =========================================="
+    ]
+    for acc in accounts:
+        lines.append(f"{acc['username']}:{acc['password']}:{acc['two_fa_secret'] or ''}")
+
+    lines.append("\n# ==========================================")
+    lines.append("# DETAILED ACCOUNT BLOCKS")
+    lines.append("# ==========================================")
     for acc in accounts:
         lines.append("========================================")
         lines.append(f"Timestamp: {acc['timestamp']}")
         lines.append(f"Username: {acc['username']}")
         lines.append(f"Password: {acc['password']}")
-        if acc["two_fa_secret"]:
-            lines.append(f"2FA Secret: {acc['two_fa_secret']}")
-        if acc["two_fa_added"]:
+        lines.append(f"2FA Secret: {acc['two_fa_secret'] or ''}")
+        if acc.get("two_fa_added"):
             lines.append(f"2FA Added: {acc['two_fa_added']}")
-        if acc["fb_status"]:
+        if acc.get("fb_status"):
             lines.append(f"FB Status: {acc['fb_status']}")
+        lines.append(f"Category: {acc['category']}")
         lines.append("========================================\n")
 
     export_text = "\n".join(lines)
     file_bytes = io.BytesIO(export_text.encode("utf-8"))
-    filename = f"exported_{category.lower()}_{len(accounts)}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    clean_cat_fn = category.lower().replace("_", "")
+    filename = f"exported_{clean_cat_fn}_{len(accounts)}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    file_bytes.name = filename
+    file_bytes.seek(0)
 
-    await query.message.reply_document(
-        document=file_bytes,
-        filename=filename,
-        caption=f"📦 **Export Successful!**\nDelivered `{len(accounts)}` accounts ({category}).\nThese accounts have been marked as consumed in DB.",
+    try:
+        clean_cat = category.replace("_", " ")
+        await context.bot.send_document(
+            chat_id=query.message.chat_id,
+            document=file_bytes,
+            filename=filename,
+            caption=f"📦 Export Successful!\nDelivered {len(accounts)} accounts ({clean_cat}).\nMarked as consumed in DB."
+        )
+        # Mark consumed ONLY AFTER document is successfully sent!
+        database.mark_accounts_consumed_by_ids([a["id"] for a in accounts])
+
+        await query.message.reply_text(
+            format_stats_message(),
+            reply_markup=build_main_menu_keyboard(),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Failed to send export document: {e}")
+        await query.message.reply_text(
+            f"❌ Error sending export file: {e}\nAccounts were NOT marked as consumed.",
+            reply_markup=build_main_menu_keyboard()
+        )
+
+async def run_live_stock_scanner(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
+    """Scans all available accounts in stock via proxy and marks suspended accounts."""
+    global is_scanner_running
+    if is_scanner_running:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="⚠️ **A scan is already in progress!** Please wait for it to complete.",
+            parse_mode="Markdown"
+        )
+        return
+
+    usernames = database.get_all_available_accounts()
+    total = len(usernames)
+    if total == 0:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="⚠️ **No available accounts in stock to scan.**\nPlease import accounts first.",
+            reply_markup=build_main_menu_keyboard(),
+            parse_mode="Markdown"
+        )
+        return
+
+    is_scanner_running = True
+    msg = await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            f"🔍 **Starting Live Stock Scan via Turnoxy Proxy...**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📦 Total Accounts to Check: `{total}`\n"
+            f"⚡ Checking each username live on Instagram...\n"
+            f"_Please wait..._"
+        ),
         parse_mode="Markdown"
     )
 
-    await query.message.reply_text(format_stats_message(), reply_markup=build_main_menu_keyboard(), parse_mode="Markdown")
+    live_count = 0
+    suspended_count = 0
+
+    try:
+        for idx, username in enumerate(usernames, 1):
+            status = await checker.check_instagram_username(username)
+            if status == "SUSPENDED":
+                database.mark_account_status(username, "SUSPENDED")
+                suspended_count += 1
+            else:
+                live_count += 1
+
+            # Update progress every 5 accounts or at the end
+            if idx % 5 == 0 or idx == total:
+                try:
+                    await msg.edit_text(
+                        f"⏳ **Live Stock Scanning in Progress...**\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"🔄 Checked: `{idx}/{total}` accounts\n"
+                        f"🟢 Live: `{live_count}`\n"
+                        f"🔴 Suspended: `{suspended_count}`\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"_Current: @{username}_",
+                        parse_mode="Markdown"
+                    )
+                except Exception:
+                    pass
+
+            await asyncio.sleep(0.5)
+
+        # Final Report
+        report_lines = [
+            "✅ **Live Stock Scan Complete!**",
+            "━━━━━━━━━━━━━━━━━━━━━━",
+            f"📊 **Total Checked:** `{total}` accounts",
+            f"🟢 **Live (Active):** `{live_count}` accounts",
+            f"🔴 **Suspended (Dead):** `{suspended_count}` accounts",
+            "━━━━━━━━━━━━━━━━━━━━━━"
+        ]
+        if suspended_count > 0:
+            report_lines.append(f"ℹ️ _All {suspended_count} suspended accounts have been automatically moved to the Suspended group in the database._")
+        else:
+            report_lines.append("🎉 _All scanned accounts are 100% LIVE and healthy!_")
+
+        keyboard = [
+            [
+                InlineKeyboardButton("🔴 View Suspended", callback_data="menu_suspended"),
+                InlineKeyboardButton("🗑️ Delete Suspended", callback_data="action_delete_suspended")
+            ],
+            [
+                InlineKeyboardButton("📊 Refresh Stats", callback_data="menu_stats"),
+                InlineKeyboardButton("🔙 Main Menu", callback_data="menu_stats")
+            ]
+        ]
+
+        await msg.edit_text(
+            "\n".join(report_lines),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+
+    except Exception as e:
+        logger.error(f"Error during stock scan: {e}")
+        await msg.edit_text(f"❌ Scan interrupted due to error: {e}", reply_markup=build_main_menu_keyboard())
+    finally:
+        is_scanner_running = False
+
+async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles /scan or /scan_stock command: starts live verification of all stock accounts."""
+    user = update.effective_user
+    if not is_admin(user.id):
+        return
+    await run_live_stock_scanner(update.effective_chat.id, context)
 
 async def send_backup_file(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     """Sends full database backup as a .txt file."""
@@ -669,12 +882,13 @@ async def send_backup_file(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
 
     file_bytes = io.BytesIO(backup_text.encode("utf-8"))
     filename = f"db_backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    file_bytes.name = filename
+    file_bytes.seek(0)
     await context.bot.send_document(
         chat_id=chat_id,
         document=file_bytes,
         filename=filename,
-        caption="💾 **Full Database Backup Snapshot**\nContains all available, consumed, and suspended accounts.",
-        parse_mode="Markdown"
+        caption="💾 Full Database Backup Snapshot\nContains all available, consumed, and suspended accounts."
     )
 
 # --- Application Builder ---
@@ -691,6 +905,8 @@ def build_telegram_app():
     app.add_handler(CommandHandler("menu", start_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("history", history_command))
+    app.add_handler(CommandHandler("scan", scan_command))
+    app.add_handler(CommandHandler("scan_stock", scan_command))
     app.add_handler(CommandHandler("backup", lambda u, c: send_backup_file(u.effective_chat.id, c)))
 
     app.add_handler(CallbackQueryHandler(callback_router))
